@@ -1,0 +1,705 @@
+generator client {
+  provider = "prisma-client-js"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "mongodb"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id                       String                    @id @default(auto()) @map("_id") @db.ObjectId
+  name                     String
+  email                    String                    @unique
+  emailVerified            DateTime?
+  phoneNumber              String?
+  // Public `/files/images/...` URL for the user's profile photo.
+  profilePictureUrl        String?
+  // Stores an argon2id hash of the plaintext password (never the plaintext).
+  password                 String
+  createdAt                DateTime                  @default(now())
+  updatedAt                DateTime                  @updatedAt
+  profile                  Profile?
+  passwordResets           PasswordResetToken[]
+  emailVerifications       EmailVerificationToken[]
+  mealActivePlans          MealActivePlan[]
+  communityPosts           CommunityPost[]
+  communityComments        CommunityComment[]
+  communityLikes           CommunityLike[]
+  communityReports         CommunityReport[]         @relation("communityReportReporter")
+  progressPhotos           ProgressPhoto[]
+  waterSettings            WaterSettings?
+  waterLogs                WaterLog[]
+  aiMealPlans              AiMealPlan[]
+  aiWorkoutPlans           AiWorkoutPlan[]
+  mealIntakeLogs           MealIntakeLog[]
+  workoutCompletionLogs    WorkoutCompletionLog[]
+  fitnessChatConversations FitnessChatConversation[]
+  walkGoal                 WalkGoal?
+  walkProgress             WalkProgress[]
+  notifications            UserNotification[]
+}
+
+// Single-use OTP issued by POST /auth/forgot-password and consumed by
+// POST /auth/reset-password. Only the SHA-256 hash of the 6-digit code is
+// stored — the raw code lives in the user's email + their phone screen.
+// Records older than [expiresAt] (default: now + 15 min) are rejected on
+// verification and should be GC'd periodically.
+model PasswordResetToken {
+  id        String    @id @default(auto()) @map("_id") @db.ObjectId
+  codeHash  String
+  userId    String    @db.ObjectId
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+// Single-use OTP issued by POST /me/email-verification/request and
+// consumed by /confirm. Same shape as PasswordResetToken on purpose —
+// keeps the OTP plumbing (generation, hashing, lookup, replay-prevention)
+// uniform across flows. Only the SHA-256 hash of the code is persisted.
+model EmailVerificationToken {
+  id        String    @id @default(auto()) @map("_id") @db.ObjectId
+  codeHash  String
+  userId    String    @db.ObjectId
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+model Profile {
+  id             String   @id @default(auto()) @map("_id") @db.ObjectId
+  // Single fitness goal value (e.g. "loseWeight", "buildMuscle"). Stored as a
+  // string so the API contract is independent of the Flutter enum's index.
+  goal           String
+  gender         String
+  dob            DateTime
+  // Canonical units: cm for height, kg for weight. Float so half-cm / half-kg
+  // values from the Flutter body-metrics step round-trip without truncation.
+  heightCm       Float
+  weightKg       Float
+  targetWeightKg Float
+  diet           String
+  bloodGroup     String
+  allergies      String[] @default([])
+  // The unit the user prefers to *see* in the UI. Storage is always cm / kg.
+  weightUnit     String   @default("kg")
+  heightUnit     String   @default("cm")
+  about          String?
+  userId         String   @unique @db.ObjectId
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model MealActivePlan {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  plan      Plans    @relation(fields: [plansId], references: [id])
+  user      User     @relation(fields: [userId], references: [id])
+  startDate DateTime
+  endDate   DateTime
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  plansId   String   @db.ObjectId
+  userId    String   @db.ObjectId
+}
+
+model PaymentHistory {
+  id                String   @id @default(auto()) @map("_id") @db.ObjectId
+  plan              Plans    @relation(fields: [plansId], references: [id])
+  plansId           String   @db.ObjectId
+  // Amount in the smallest currency unit's parent — i.e. rupees for INR.
+  // Razorpay's API works in paise (×100); we convert at the boundary.
+  amount            Float
+  currency          String   @default("INR")
+  userid            String   @db.ObjectId
+  // Lifecycle string. We use Razorpay-style verbs (created / captured /
+  // failed / refunded) so the gateway and our DB share vocabulary. The
+  // admin's status grouping already buckets these into succeeded /
+  // pending / failed.
+  status            String
+  // Razorpay's order_id (set when we create the order; required).
+  razorpayOrderId   String?  @unique
+  // The actual payment_id Razorpay assigns after the user pays.
+  razorpayPaymentId String?
+  // HMAC-SHA256 signature the gateway sends back. We store the verified
+  // signature for audit / dispute resolution.
+  razorpaySignature String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@index([userid])
+}
+
+model Plans {
+  id                 String             @id @default(auto()) @map("_id") @db.ObjectId
+  name               String
+  description        String
+  price              Float
+  features           String[]           @default([])
+  accessFeatures     AccessFeatures[]   @default([])
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
+  mealActivePlans    MealActivePlan[]
+  paymentHistories   PaymentHistory[]
+  expirationDuration ExpirationDuration @default(lifetime)
+}
+
+model AppSettings {
+  id                 String           @id @default(auto()) @map("_id") @db.ObjectId
+  key                String           @unique @default("app")
+  freeAccessFeatures AccessFeatures[] @default([])
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+}
+
+// Append-only log of OpenAI token usage per API call. Powers the admin
+// AI usage dashboard and cost monitoring.
+model AiTokenUsage {
+  id               String   @id @default(auto()) @map("_id") @db.ObjectId
+  source           String
+  model            String
+  promptTokens     Int      @default(0)
+  completionTokens Int      @default(0)
+  totalTokens      Int      @default(0)
+  userId           String?  @db.ObjectId
+  createdAt        DateTime @default(now())
+
+  @@index([source])
+  @@index([createdAt])
+  @@index([userId])
+}
+
+enum ExpirationDuration {
+  oneMonth
+  threeMonths
+  sixMonths
+  oneYear
+  lifetime
+}
+
+enum AccessFeatures {
+  mealPlan
+  workoutPlan
+  meditationPlan
+  nutritionPlan
+  community
+  aiChat
+  nutritionCourse
+  progressPhotos
+  meditationVideos
+  recipeEbook
+  foodScan
+}
+
+model Exercise {
+  id          String   @id @default(auto()) @map("_id") @db.ObjectId
+  name        String
+  description String
+  type        String
+  workoutTime String
+  videoUrl    String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}
+
+model Meal {
+  id              String   @id @default(auto()) @map("_id") @db.ObjectId
+  aiGeneratedMeal Json[]
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+// AI-generated weekly meal plan assigned to a user by an admin.
+//
+// `plan` holds the full structured JSON (7 days × 4 meals with
+// nutrition). Only one row per user should have `isActive = true`
+// at a time — that is the plan the Flutter Meals tab renders.
+// Older plans stay in `archived` status for audit.
+model AiMealPlan {
+  id          String          @id @default(auto()) @map("_id") @db.ObjectId
+  userId      String          @db.ObjectId
+  user        User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title       String
+  weekStart   DateTime
+  weekEnd     DateTime
+  plan        Json
+  notes       String?
+  status      String          @default("draft")
+  isActive    Boolean         @default(false)
+  generatedAt DateTime        @default(now())
+  publishedAt DateTime?
+  createdAt   DateTime        @default(now())
+  updatedAt   DateTime        @updatedAt
+  intakeLogs  MealIntakeLog[]
+
+  @@index([userId])
+  @@index([userId, isActive])
+}
+
+// AI-generated weekly workout plan assigned to a user by an admin.
+//
+// `plan` holds 7 days of sessions referencing the Exercise catalog.
+// Only one row per user should have `isActive = true` at a time —
+// that is the plan the Flutter Workouts tab renders.
+model AiWorkoutPlan {
+  id          String    @id @default(auto()) @map("_id") @db.ObjectId
+  userId      String    @db.ObjectId
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title       String
+  weekStart   DateTime
+  weekEnd     DateTime
+  plan        Json
+  notes       String?
+  status      String    @default("draft")
+  isActive    Boolean   @default(false)
+  generatedAt DateTime  @default(now())
+  publishedAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  completionLogs WorkoutCompletionLog[]
+
+  @@index([userId])
+  @@index([userId, isActive])
+}
+
+// Records when a user marks a planned workout session as complete.
+model WorkoutCompletionLog {
+  id             String        @id @default(auto()) @map("_id") @db.ObjectId
+  userId         String        @db.ObjectId
+  user           User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workoutPlanId  String        @db.ObjectId
+  workoutPlan    AiWorkoutPlan @relation(fields: [workoutPlanId], references: [id], onDelete: Cascade)
+  planDate       DateTime
+  dayIndex       Int
+  sessionId      String
+  sessionTitle   String        @default("")
+  sessionType    String        @default("strength")
+  durationMin    Int           @default(0)
+  caloriesBurned Int           @default(0)
+  intensity      String        @default("moderate")
+  loggedAt       DateTime      @default(now())
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+
+  @@unique([userId, workoutPlanId, planDate, sessionId])
+  @@index([userId, planDate])
+}
+
+model MealIntakeLog {
+  id                String     @id @default(auto()) @map("_id") @db.ObjectId
+  userId            String     @db.ObjectId
+  user              User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  mealPlanId        String     @db.ObjectId
+  mealPlan          AiMealPlan @relation(fields: [mealPlanId], references: [id], onDelete: Cascade)
+  // Calendar day within the plan week (date-only semantics).
+  planDate          DateTime
+  dayIndex          Int
+  slot              String
+  mealName          String     @default("")
+  foods             String[]   @default([])
+  calories          Float
+  proteinGrams      Float
+  carbsGrams        Float
+  fatGrams          Float
+  fiberGrams        Float
+  sugarGrams        Float      @default(0)
+  saturatedFatGrams Float      @default(0)
+  sodiumMg          Float      @default(0)
+  loggedAt          DateTime   @default(now())
+  createdAt         DateTime   @default(now())
+  updatedAt         DateTime   @updatedAt
+
+  @@unique([userId, mealPlanId, planDate, slot])
+  @@index([userId, planDate])
+}
+
+// Per-user hydration preferences.
+//
+// One row per user (the unique `userId`). Settings are upserted on
+// first read so the client never has to deal with a "no settings yet"
+// branch — defaults match what the home dashboard already displays
+// for guests (2 L goal / 250 ml glass / 8am–10pm hourly reminders).
+//
+// Reminder cadence is encoded as `[startHour, endHour]` with an
+// `intervalMinutes` step rather than a JSON `schedule` array because
+// the latter made it impossible to compute "how many reminders fire
+// in a day" without parsing the blob on the client. The cadence model
+// covers every real-world use case (every 30 min, every 90 min,
+// custom waking-hours window) and is trivial to render as a chip row
+// in the settings screen.
+model WaterSettings {
+  id               String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId           String   @unique @db.ObjectId
+  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // Daily target in millilitres. Stored as ml (not litres) so the
+  // arithmetic stays integer all the way through the stack.
+  dailyGoalMl      Int      @default(2000)
+  // Default quick-add amount when the user taps the big "+ glass"
+  // button. Custom amounts are still allowed via the log endpoint.
+  glassSizeMl      Int      @default(250)
+  // Master switch for local notifications. When false the client
+  // cancels every scheduled reminder; the rest of the fields keep
+  // their values so re-enabling restores the same cadence.
+  remindersEnabled Boolean  @default(true)
+  // 24-hour clock: 8 means 08:00, 22 means 22:00. Inclusive on the
+  // start, exclusive-or-equal on the end depending on whether the
+  // last slot lands exactly on `endHour`.
+  startHour        Int      @default(8)
+  endHour          Int      @default(22)
+  // Step between reminders, in minutes. Capped at the client; we
+  // also clamp on write so a corrupt value can't crash the scheduler.
+  intervalMinutes  Int      @default(60)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+}
+
+// One row per "I drank N ml at time T" entry.
+//
+// `loggedAt` carries when the drink happened (may be backdated from
+// the client — e.g. the user logs lunch water at 3pm). `createdAt`
+// is when the row hit our DB and is what we use for audit / undo
+// ordering. Composite index on (userId, loggedAt) keeps both today's
+// view and the weekly history chart O(rows-on-screen).
+model WaterLog {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  userId    String   @db.ObjectId
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  amountMl  Int
+  loggedAt  DateTime @default(now())
+  createdAt DateTime @default(now())
+
+  @@index([userId, loggedAt])
+}
+
+// Per-user daily step goal. One row per user; created on first access.
+model WalkGoal {
+  id           String         @id @default(auto()) @map("_id") @db.ObjectId
+  userId       String         @unique @db.ObjectId
+  user         User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  targetSteps  Int            @default(10000)
+  walkProgress WalkProgress[]
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+}
+
+// One row per user per calendar day — synced from the device pedometer /
+// HealthKit / Health Connect feed.
+model WalkProgress {
+  id         String    @id @default(auto()) @map("_id") @db.ObjectId
+  userId     String    @db.ObjectId
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  date       DateTime
+  steps      Int
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+  walkGoal   WalkGoal? @relation(fields: [walkGoalId], references: [id])
+  walkGoalId String?   @db.ObjectId
+
+  @@unique([userId, date])
+}
+
+// Daily progress photos.
+//
+// One row per uploaded photo. `photoUrl` is the public URL the
+// uploads service returned (`/files/images/<cuid>.<ext>`) — same
+// contract as community post images, so we get to reuse the existing
+// image pipeline and CDN/cache rules.
+//
+// `takenAt` is what the gallery groups + sorts by — distinct from
+// `createdAt` so a user can backfill a photo they took yesterday
+// without it appearing at the top of "today". When the client omits
+// it we default to now() on the server.
+model ProgressPhoto {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  photoUrl  String
+  // Optional caption (e.g. "Front · morning", "92.4kg · week 4").
+  // Kept tiny on purpose — the gallery's tile only has room for a
+  // short line, longer thoughts belong in the journal once that
+  // ships.
+  note      String?
+  takenAt   DateTime @default(now())
+  userId    String   @db.ObjectId
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Drives the per-user newest-first gallery query — most reads hit
+  // exactly this index.
+  @@index([userId, takenAt])
+}
+
+// Community feed post.
+//
+// `content` carries the text body (empty allowed when [images] is set).
+// `images` is the *public URL* of each upload (zero–four). We store the
+// fully-resolved URL the client should fetch rather than the on-disk
+// filename so a future move to S3/CDN doesn't require a schema change.
+//
+// `deletedAt` is a soft-delete tombstone — feed queries filter it out,
+// but the row sticks around so we can audit moderation actions and so
+// comments + likes don't dangle.
+model CommunityPost {
+  id        String             @id @default(auto()) @map("_id") @db.ObjectId
+  content   String
+  images    String[]           @default([])
+  userId    String             @db.ObjectId
+  user      User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  comments  CommunityComment[]
+  likes     CommunityLike[]
+  reports   CommunityReport[]  @relation("communityReportPost")
+  deletedAt DateTime?
+  createdAt DateTime           @default(now())
+  updatedAt DateTime           @updatedAt
+
+  @@index([userId])
+  @@index([createdAt])
+  @@index([deletedAt])
+}
+
+model CommunityComment {
+  id        String            @id @default(auto()) @map("_id") @db.ObjectId
+  text      String
+  userId    String            @db.ObjectId
+  user      User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  postId    String            @db.ObjectId
+  post      CommunityPost     @relation(fields: [postId], references: [id], onDelete: Cascade)
+  reports   CommunityReport[] @relation("communityReportComment")
+  deletedAt DateTime?
+  createdAt DateTime          @default(now())
+  updatedAt DateTime          @updatedAt
+
+  @@index([postId])
+  @@index([userId])
+  @@index([deletedAt])
+}
+
+// One row per (user, post) like. The composite unique key gives us
+// idempotent toggle semantics without a transaction: a duplicate POST
+// from a flaky network can be safely upserted, and "did I like this
+// post" is a single indexed lookup.
+model CommunityLike {
+  id        String        @id @default(auto()) @map("_id") @db.ObjectId
+  userId    String        @db.ObjectId
+  user      User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  postId    String        @db.ObjectId
+  post      CommunityPost @relation(fields: [postId], references: [id], onDelete: Cascade)
+  createdAt DateTime      @default(now())
+
+  @@unique([userId, postId])
+  @@index([postId])
+}
+
+// User-submitted moderation report on a post or comment. Exactly one
+// of [postId] / [commentId] is set per row; the other is null. This
+// keeps reports filterable per-target without two parallel tables.
+//
+// `status` uses an enum so the admin's grouped views ("open" vs
+// "resolved") can be expressed as a `where` filter instead of string
+// matching at the application layer.
+model CommunityReport {
+  id         String                @id @default(auto()) @map("_id") @db.ObjectId
+  reason     String
+  notes      String?
+  status     CommunityReportStatus @default(open)
+  reporterId String                @db.ObjectId
+  reporter   User                  @relation("communityReportReporter", fields: [reporterId], references: [id], onDelete: Cascade)
+  postId     String?               @db.ObjectId
+  post       CommunityPost?        @relation("communityReportPost", fields: [postId], references: [id], onDelete: Cascade)
+  commentId  String?               @db.ObjectId
+  comment    CommunityComment?     @relation("communityReportComment", fields: [commentId], references: [id], onDelete: Cascade)
+  resolvedAt DateTime?
+  resolvedBy String?
+  createdAt  DateTime              @default(now())
+  updatedAt  DateTime              @updatedAt
+
+  @@index([status, createdAt])
+  @@index([postId])
+  @@index([commentId])
+  @@index([reporterId])
+}
+
+enum CommunityReportStatus {
+  open
+  resolved
+  dismissed
+}
+
+// =============================================================================
+// Premium content libraries
+// =============================================================================
+//
+// Each of the next three models backs a dedicated admin section for
+// curating a single content surface in the mobile app:
+//
+//   - `Recipe`          — recipe ebook entries (cover + PDF / link)
+//   - `NutritionLesson` — the structured nutrition course modules
+//                          (cover, video, optional companion PDF)
+//   - `Meditation`      — audio meditations (cover + mp3/m4a track)
+//
+// They intentionally share a similar shape: a title, description,
+// optional cover image, optional category, the primary media URL,
+// optional secondary media (e.g. a PDF alongside a course video),
+// a `displayOrder` for hand-curated ordering, and an `isPublished`
+// flag so operators can stage drafts before they go live.
+//
+// The actual file bytes are owned by the uploads service
+// (`backend/src/routes/uploads.ts`) under the matching domain
+// bucket. These tables only store the public URL the upload service
+// returned — same contract used by community post images, so we get
+// to reuse the existing pipeline + CDN rules.
+
+model Recipe {
+  id            String   @id @default(auto()) @map("_id") @db.ObjectId
+  title         String
+  description   String
+  // Free-form taxonomy (e.g. "Breakfast", "High-protein", "Vegan").
+  // String not enum so adding a new category never requires a
+  // migration — operators just type the new value once and it
+  // appears in the filter chips automatically.
+  category      String?
+  // `/files/images/<cuid>.<ext>` URL from the uploads service.
+  coverImageUrl String?
+  // `/files/recipes/<cuid>.pdf` URL from the uploads service.
+  pdfUrl        String?
+  // Cooking metadata. Both optional so a recipe that's still being
+  // drafted can be saved before every detail is known.
+  prepMinutes   Int?
+  servings      Int?
+  // Hand-curated sort within the catalog. Lower numbers surface
+  // first; ties fall back to `createdAt desc`.
+  displayOrder  Int      @default(0)
+  // Drafts (`false`) are hidden from the mobile app but still
+  // visible in the admin so an operator can iterate on copy +
+  // assets before publishing.
+  isPublished   Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([isPublished, displayOrder])
+  @@index([category])
+}
+
+model NutritionLesson {
+  id              String   @id @default(auto()) @map("_id") @db.ObjectId
+  title           String
+  description     String
+  // Module label (e.g. "Module 1", "Foundations"). String for the
+  // same flexibility reason as Recipe.category — operators can
+  // restructure the course without a migration.
+  module          String?
+  coverImageUrl   String?
+  // Primary lesson media — typically a video. Optional so a PDF-only
+  // lesson is still valid.
+  videoUrl        String?
+  // Optional companion handout / worksheet (`/files/nutrition/...pdf`).
+  pdfUrl          String?
+  durationMinutes Int?
+  displayOrder    Int      @default(0)
+  isPublished     Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([isPublished, displayOrder])
+  @@index([module])
+}
+
+model Meditation {
+  id              String   @id @default(auto()) @map("_id") @db.ObjectId
+  title           String
+  description     String
+  // Mood / use-case (e.g. "Sleep", "Focus", "Anxiety"). Drives the
+  // grouping the mobile app will surface in its meditation library.
+  category        String?
+  coverImageUrl   String?
+  // `/files/meditation/<cuid>.<ext>` URL from the uploads service.
+  // Required — a meditation row without a track has no reason to
+  // exist.
+  audioUrl        String
+  durationSeconds Int?
+  displayOrder    Int      @default(0)
+  isPublished     Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@index([isPublished, displayOrder])
+  @@index([category])
+}
+
+// ---------------------------------------------------------------------------
+// Fitness AI chat — personalised coaching conversations per user.
+// ---------------------------------------------------------------------------
+
+model FitnessChatConversation {
+  id        String               @id @default(auto()) @map("_id") @db.ObjectId
+  userId    String               @db.ObjectId
+  user      User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title     String               @default("Fitness chat")
+  createdAt DateTime             @default(now())
+  updatedAt DateTime             @updatedAt
+  messages  FitnessChatMessage[]
+
+  @@index([userId, updatedAt])
+}
+
+model FitnessChatMessage {
+  id             String                  @id @default(auto()) @map("_id") @db.ObjectId
+  conversationId String                  @db.ObjectId
+  conversation   FitnessChatConversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  role           String
+  content        String
+  createdAt      DateTime                @default(now())
+
+  @@index([conversationId, createdAt])
+}
+
+// Operator- or system-sent message delivered to a single user. When the
+// admin broadcasts to everyone we fan out one row per user (same
+// [batchId]) so read state is per-account and the inbox stays simple.
+model UserNotification {
+  id        String    @id @default(auto()) @map("_id") @db.ObjectId
+  userId    String    @db.ObjectId
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title     String
+  body      String
+  batchId   String?
+  readAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId, createdAt])
+  @@index([userId, readAt])
+  @@index([batchId])
+}
+
+// Dashboard operators — separate from mobile app `User` accounts.
+// Passwords are argon2id hashes (same format as app users).
+enum AdminRole {
+  operator
+  super_admin
+}
+
+model AdminUser {
+  id          String    @id @default(auto()) @map("_id") @db.ObjectId
+  name        String
+  email       String    @unique
+  password    String
+  role        AdminRole @default(operator)
+  active      Boolean   @default(true)
+  lastLoginAt DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([active])
+  @@index([role])
+}

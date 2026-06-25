@@ -1,0 +1,36 @@
+{
+  "name": "backend",
+  "module": "index.ts",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "bun --watch index.ts",
+    "start": "bun index.ts",
+    "db:generate": "prisma generate",
+    "db:push": "prisma db push && prisma generate",
+    "db:studio": "prisma studio",
+    "db:format": "prisma format",
+    "db:pull": "prisma db pull",
+    "jobs:meal-plans": "bun scripts/run-weekly-meal-plans.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/cors": "^2.8.19",
+    "@types/express": "^5.0.6",
+    "@types/multer": "^2.1.0",
+    "prisma": "6.19.0"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "@prisma/client": "6.19.0",
+    "cors": "^2.8.6",
+    "dotenv": "^17.4.2",
+    "express": "^5.2.1",
+    "jose": "^6.2.3",
+    "multer": "^2.1.1",
+    "openai": "^6.42.0",
+    "zod": "^4.4.3"
+  }
+}
