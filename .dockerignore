@@ -1,0 +1,18 @@
+node_modules
+.git
+.env
+.env.*
+!.env.example
+
+# Generated locally; rebuilt in the image.
+generated
+
+# Logs and OS junk
+*.log
+.DS_Store
+.idea
+
+# Test / coverage artifacts
+coverage
+dist
+out

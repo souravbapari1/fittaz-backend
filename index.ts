@@ -114,8 +114,9 @@ app.use(
 );
 
 const port = Number(process.env.PORT ?? 4040);
-const server = app.listen(port, () => {
-  console.log(`[backend] listening on http://localhost:${port}`);
+const host = process.env.HOST ?? "0.0.0.0";
+const server = app.listen(port, host, () => {
+  console.log(`[backend] listening on http://${host}:${port}`);
   startMealPlanCron();
 });
 
