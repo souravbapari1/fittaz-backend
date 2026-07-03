@@ -296,19 +296,29 @@ const ABOUT_MAX = 500;
 // which we'd add when WhatsApp / SMS reachability matters.
 const PHONE_RE = /^[+0-9 ()\-]{7,24}$/;
 
-/** Allow only `/files/images/<name>` URLs (relative or absolute). */
-function isAllowedImageUrl(url: unknown): url is string {
-  if (typeof url !== "string") return false;
+/**
+ * Normalise an uploaded image URL to the canonical site-relative form
+ * `/files/images/<name>`, or return null if it's not a valid image asset.
+ *
+ * Tolerates absolute URLs, an optional proxy mount prefix (the app hits
+ * the backend through the admin's `/backend-api` proxy, so uploaded URLs
+ * come back as `/backend-api/files/images/...`), and already-relative
+ * paths. Storing the relative form keeps records host/proxy agnostic.
+ */
+function normalizeImageUrl(url: unknown): string | null {
+  if (typeof url !== "string") return null;
+  let path: string;
   try {
-    const path = url.startsWith("http")
+    path = url.startsWith("http")
       ? new URL(url).pathname
       : url.startsWith("/")
         ? url
         : `/${url}`;
-    return /^\/files\/images\/[A-Za-z0-9_-]+\.[A-Za-z0-9]+$/.test(path);
   } catch {
-    return false;
+    return null;
   }
+  const match = /\/files\/images\/([A-Za-z0-9_-]+\.[A-Za-z0-9]+)$/.exec(path);
+  return match ? `/files/images/${match[1]}` : null;
 }
 
 meRouter.patch("/", async (req: Request, res: Response) => {
@@ -364,10 +374,13 @@ meRouter.patch("/", async (req: Request, res: Response) => {
       const trimmed = body.profilePictureUrl.trim();
       if (trimmed.length === 0) {
         nextProfilePictureUrl = null;
-      } else if (!isAllowedImageUrl(trimmed)) {
-        missing.push("profilePictureUrl");
       } else {
-        nextProfilePictureUrl = trimmed;
+        const normalized = normalizeImageUrl(trimmed);
+        if (normalized === null) {
+          missing.push("profilePictureUrl");
+        } else {
+          nextProfilePictureUrl = normalized;
+        }
       }
     }
   }

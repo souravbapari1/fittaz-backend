@@ -39,21 +39,29 @@ const MAX_PAGE = 120;
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Allow only `/files/images/<name>` URLs (relative or absolute). Mirror
- *  of the helper in community.ts; intentionally duplicated so the two
- *  routers can evolve their URL rules independently if needed. */
-function isAllowedImageUrl(url: unknown): url is string {
-  if (typeof url !== "string") return false;
+/** Normalise an uploaded image URL to the canonical site-relative form
+ *  `/files/images/<name>`, or return null if invalid. Mirror of the
+ *  helper in community.ts; intentionally duplicated so the two routers
+ *  can evolve their URL rules independently if needed.
+ *
+ *  Tolerates absolute URLs and an optional proxy mount prefix (the app
+ *  reaches the backend through the admin's `/backend-api` proxy, so
+ *  uploaded URLs come back as `/backend-api/files/images/...`). Storing
+ *  the relative form keeps records host/proxy agnostic. */
+function normalizeImageUrl(url: unknown): string | null {
+  if (typeof url !== "string") return null;
+  let path: string;
   try {
-    const path = url.startsWith("http")
+    path = url.startsWith("http")
       ? new URL(url).pathname
       : url.startsWith("/")
         ? url
         : `/${url}`;
-    return /^\/files\/images\/[A-Za-z0-9_-]+\.[A-Za-z0-9]+$/.test(path);
   } catch {
-    return false;
+    return null;
   }
+  const match = /\/files\/images\/([A-Za-z0-9_-]+\.[A-Za-z0-9]+)$/.exec(path);
+  return match ? `/files/images/${match[1]}` : null;
 }
 
 /** Parse an ISO8601 string to a Date; rejects junk values like
@@ -166,7 +174,8 @@ progressPhotosRouter.post("/", async (req: Request, res: Response) => {
     note?: unknown;
   };
 
-  if (!isAllowedImageUrl(body.photoUrl)) {
+  const photoUrl = normalizeImageUrl(body.photoUrl);
+  if (photoUrl === null) {
     res.status(400).json({
       error: "invalid_photo_url",
       message: "photoUrl must be a /files/images/... URL",
@@ -196,7 +205,7 @@ progressPhotosRouter.post("/", async (req: Request, res: Response) => {
   const row = await prisma.progressPhoto.create({
     data: {
       userId: req.userId!,
-      photoUrl: body.photoUrl,
+      photoUrl,
       note,
       // `takenAt: null` means "use the default" — Prisma rejects an
       // explicit null on a defaulted-non-null column, so we just

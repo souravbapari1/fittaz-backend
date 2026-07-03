@@ -111,20 +111,34 @@ function safeString(raw: unknown, max: number): string | null {
   return t;
 }
 
-/** Allow only `/files/images/<name>` URLs (relative or absolute). */
-function isAllowedImageUrl(url: unknown): url is string {
-  if (typeof url !== "string") return false;
-  // Strip the scheme+host if present, then check the path.
+/**
+ * Normalise an uploaded image URL to the canonical site-relative form
+ * `/files/images/<name>`, or return null if it doesn't reference a valid
+ * image asset.
+ *
+ * Accepts absolute URLs (`https://host/files/images/x.jpg`), paths that
+ * carry a proxy mount prefix (`/backend-api/files/images/x.jpg` — the
+ * app talks to the backend through the admin's `/backend-api` proxy),
+ * and already-relative paths. We always store the relative form so
+ * records stay portable across hosts and proxy prefixes; the client
+ * resolves it against its configured API base at render time.
+ */
+function normalizeImageUrl(url: unknown): string | null {
+  if (typeof url !== "string") return null;
+  let path: string;
   try {
-    const path = url.startsWith("http")
+    path = url.startsWith("http")
       ? new URL(url).pathname
       : url.startsWith("/")
         ? url
         : `/${url}`;
-    return /^\/files\/images\/[A-Za-z0-9_-]+\.[A-Za-z0-9]+$/.test(path);
   } catch {
-    return false;
+    return null;
   }
+  // Match `/files/images/<name>` anywhere at the end of the path so an
+  // optional proxy prefix (e.g. `/backend-api`) is tolerated.
+  const match = /\/files\/images\/([A-Za-z0-9_-]+\.[A-Za-z0-9]+)$/.exec(path);
+  return match ? `/files/images/${match[1]}` : null;
 }
 
 /**
@@ -253,7 +267,10 @@ communityRouter.post("/posts", async (req: Request, res: Response) => {
 
   let images: string[] = [];
   if (Array.isArray(body.imageUrls)) {
-    images = body.imageUrls.filter(isAllowedImageUrl).slice(0, MAX_IMAGES);
+    images = body.imageUrls
+      .map(normalizeImageUrl)
+      .filter((u): u is string => u !== null)
+      .slice(0, MAX_IMAGES);
   }
 
   const hasContent = contentForCheck.length > 0;
