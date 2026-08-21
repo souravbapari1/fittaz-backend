@@ -46,7 +46,10 @@ app.use(express.json({ limit: "256kb" }));
 
 app.get("/health", async (_req: Request, res: Response) => {
   try {
-    await prisma.$queryRaw`SELECT 1`;
+    // MongoDB has no $queryRaw — a cheap indexed read is the portable
+    // liveness probe. `findFirst` with a null-ish select still round-trips
+    // to the server, which is all we need to prove the connection is up.
+    await prisma.user.findFirst({ select: { id: true } });
     res.json({ status: "ok", db: "up" });
   } catch (err) {
     res.status(503).json({

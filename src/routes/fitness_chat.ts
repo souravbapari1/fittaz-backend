@@ -17,6 +17,7 @@ import {
 } from "../lib/fitness_chat_ai.ts";
 import { prisma } from "../lib/prisma.ts";
 import { requireAuth } from "../middleware/require_auth.ts";
+import { isObjectId } from "../lib/object_id.ts";
 
 export const fitnessChatRouter: Router = Router();
 fitnessChatRouter.use(requireAuth);
@@ -52,6 +53,7 @@ async function loadUserContext(userId: string): Promise<FitnessChatUserContext |
   const ctx: FitnessChatUserContext = {
     name: user.name,
     goal: profile.goal,
+    goals: profile.goals,
     gender: profile.gender,
     ageYears: ageFromDob(profile.dob),
     heightCm: profile.heightCm,
@@ -410,6 +412,10 @@ fitnessChatRouter.get(
   async (req: Request, res: Response) => {
     const userId = req.userId!;
     const id = req.params.id;
+    if (!isObjectId(id)) {
+      res.status(404).json({ error: "conversation_not_found" });
+      return;
+    }
 
     const row = await prisma.fitnessChatConversation.findFirst({
       where: { id, userId },
@@ -441,6 +447,10 @@ fitnessChatRouter.delete(
   async (req: Request, res: Response) => {
     const userId = req.userId!;
     const id = req.params.id;
+    if (!isObjectId(id)) {
+      res.status(404).json({ error: "conversation_not_found" });
+      return;
+    }
 
     const row = await prisma.fitnessChatConversation.findFirst({
       where: { id, userId },

@@ -78,9 +78,16 @@ model EmailVerificationToken {
 
 model Profile {
   id             String   @id @default(auto()) @map("_id") @db.ObjectId
-  // Single fitness goal value (e.g. "loseWeight", "buildMuscle"). Stored as a
-  // string so the API contract is independent of the Flutter enum's index.
+  // Primary fitness goal — always mirrors `goals[0]`. Kept as a scalar so the
+  // meal-plan engine, community feed and report endpoints can keep selecting
+  // one column instead of unpacking the array.
+  // Stored as a string so the API contract is independent of the Flutter
+  // enum's index.
   goal           String
+  // Every goal the user picked, in the order they picked them. The setup
+  // flow is multi-select; older clients that only send `goal` are backfilled
+  // to a single-element array on write.
+  goals          String[] @default([])
   gender         String
   dob            DateTime
   // Canonical units: cm for height, kg for weight. Float so half-cm / half-kg

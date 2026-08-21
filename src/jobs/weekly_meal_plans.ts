@@ -17,6 +17,7 @@ export interface WeeklyMealPlanJobResult {
 
 const profileSelect = {
   goal: true,
+  goals: true,
   gender: true,
   dob: true,
   heightCm: true,
@@ -77,6 +78,7 @@ export async function generateAndPublishMealPlanForUser(
     {
       name: user.name,
       goal: p.goal,
+      goals: p.goals,
       gender: p.gender,
       ageYears: ageFromDob(p.dob),
       heightCm: p.heightCm,

@@ -9,6 +9,7 @@ import { Router } from "express";
 
 import { prisma } from "../lib/prisma.ts";
 import { requireAuth } from "../middleware/require_auth.ts";
+import { notDeleted } from "../lib/mongo_filters.ts";
 
 export const userReportRouter: Router = Router();
 userReportRouter.use(requireAuth);
@@ -193,7 +194,7 @@ userReportRouter.get("/", async (req: Request, res: Response) => {
       },
     }),
     prisma.progressPhoto.count({ where: { userId } }),
-    prisma.communityPost.count({ where: { userId, deletedAt: null } }),
+    prisma.communityPost.count({ where: { userId, ...notDeleted() } }),
     prisma.walkProgress.findMany({
       where: { userId, date: { gte: weekStart, lt: tomorrow } },
       select: { date: true, steps: true },
@@ -334,6 +335,7 @@ userReportRouter.get("/", async (req: Request, res: Response) => {
       ? {
           hasProfile: true,
           goal: profile.goal,
+          goals: profile.goals,
           gender: profile.gender,
           weightKg: profile.weightKg,
           targetWeightKg: profile.targetWeightKg,

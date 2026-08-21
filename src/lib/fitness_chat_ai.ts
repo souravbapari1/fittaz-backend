@@ -27,6 +27,8 @@ function client(): OpenAI {
 export interface FitnessChatUserContext {
   name: string;
   goal: string;
+  /// Every goal the user picked. Falls back to `[goal]` when absent.
+  goals?: string[];
   gender: string;
   ageYears: number;
   heightCm: number;
@@ -45,7 +47,14 @@ export interface FitnessChatUserContext {
   waterGoalMl?: number;
 }
 
+/// The user's goals, newest schema first. Older callers that only set the
+/// scalar `goal` still produce a valid one-element list.
+function goalsOf(ctx: { goal: string; goals?: string[] }): string[] {
+  return ctx.goals?.length ? ctx.goals : [ctx.goal];
+}
+
 function buildSystemPrompt(ctx: FitnessChatUserContext): string {
+  const goalLine = goalsOf(ctx).join(", ");
   const allergyLine =
     ctx.allergies.length > 0
       ? `Allergies: ${ctx.allergies.join(", ")}. Never suggest foods containing these.`
@@ -82,7 +91,7 @@ Your role:
 
 User profile:
 - Name: ${ctx.name}
-- Goal: ${ctx.goal}
+- Goals: ${goalLine}
 - Gender: ${ctx.gender}
 - Age: ${ctx.ageYears} years
 - Height: ${ctx.heightCm.toFixed(0)} cm

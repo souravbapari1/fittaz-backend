@@ -29,6 +29,8 @@ import { Router } from "express";
 import { Prisma } from "../../generated/prisma/index.js";
 import { prisma } from "../lib/prisma.ts";
 import { requireAuth } from "../middleware/require_auth.ts";
+import { notDeleted } from "../lib/mongo_filters.ts";
+import { isObjectId } from "../lib/object_id.ts";
 
 export const communityRouter: Router = Router();
 
@@ -73,10 +75,10 @@ const postBaseSelect = {
   },
   _count: {
     select: {
-      // Soft-deleted comments are filtered at the application layer
-      // below; Prisma's `_count` is unfiltered which is fine for the
-      // feed (it never shows the deleted ones anyway).
-      comments: true,
+      // Must carry the same soft-delete filter as the comments list
+      // itself — an unfiltered count makes the feed advertise "3
+      // comments" on a post that opens to show only one.
+      comments: { where: notDeleted() },
       likes: true,
     },
   },
@@ -213,12 +215,15 @@ function shapeComment(row: {
 // `cursor`; we skip 1 to consume it.
 communityRouter.get("/posts", async (req: Request, res: Response) => {
   const limit = parseLimit(req.query.limit);
-  const cursor = typeof req.query.cursor === "string" ? req.query.cursor : undefined;
+  const rawCursor = req.query.cursor;
+  // A stale or hand-edited cursor would otherwise reach Prisma as a
+  // malformed ObjectID and 500 the entire feed. Fall back to page one.
+  const cursor = isObjectId(rawCursor) ? rawCursor : undefined;
 
   // limit+1 so we can tell whether there's a next page without an
   // extra count() query.
   const rows = await prisma.communityPost.findMany({
-    where: { deletedAt: null },
+    where: notDeleted(),
     orderBy: [{ createdAt: "desc" }, { id: "desc" }],
     take: limit + 1,
     cursor: cursor ? { id: cursor } : undefined,
@@ -303,9 +308,13 @@ communityRouter.post("/posts", async (req: Request, res: Response) => {
 // rendered.
 communityRouter.get("/posts/:id", async (req: Request, res: Response) => {
   const { id } = req.params as { id: string };
+  if (!isObjectId(id)) {
+    res.status(404).json({ error: "not_found" });
+    return;
+  }
 
   const post = await prisma.communityPost.findFirst({
-    where: { id, deletedAt: null },
+    where: { id, ...notDeleted() },
     select: postBaseSelect,
   });
   if (!post) {
@@ -319,7 +328,7 @@ communityRouter.get("/posts/:id", async (req: Request, res: Response) => {
       select: { id: true },
     }),
     prisma.communityComment.findMany({
-      where: { postId: id, deletedAt: null },
+      where: { postId: id, ...notDeleted() },
       orderBy: { createdAt: "asc" },
       take: DEFAULT_PAGE,
       select: commentBaseSelect,
@@ -340,6 +349,10 @@ communityRouter.get("/posts/:id", async (req: Request, res: Response) => {
 // idempotent from the client's perspective.
 communityRouter.delete("/posts/:id", async (req: Request, res: Response) => {
   const { id } = req.params as { id: string };
+  if (!isObjectId(id)) {
+    res.status(404).json({ error: "not_found" });
+    return;
+  }
 
   const post = await prisma.communityPost.findUnique({
     where: { id },
@@ -376,9 +389,13 @@ communityRouter.delete("/posts/:id", async (req: Request, res: Response) => {
 // client doesn't have to refetch the feed for one number.
 communityRouter.post("/posts/:id/like", async (req: Request, res: Response) => {
   const { id } = req.params as { id: string };
+  if (!isObjectId(id)) {
+    res.status(404).json({ error: "not_found" });
+    return;
+  }
 
   const post = await prisma.communityPost.findFirst({
-    where: { id, deletedAt: null },
+    where: { id, ...notDeleted() },
     select: { id: true },
   });
   if (!post) {
@@ -421,14 +438,21 @@ communityRouter.post("/posts/:id/like", async (req: Request, res: Response) => {
 // GET /community/posts/:id/comments?cursor=&limit=
 communityRouter.get("/posts/:id/comments", async (req: Request, res: Response) => {
   const { id } = req.params as { id: string };
+  if (!isObjectId(id)) {
+    res.status(404).json({ error: "not_found" });
+    return;
+  }
   const limit = parseLimit(req.query.limit);
-  const cursor = typeof req.query.cursor === "string" ? req.query.cursor : undefined;
+  const rawCursor = req.query.cursor;
+  // A stale or hand-edited cursor would otherwise reach Prisma as a
+  // malformed ObjectID and 500 the entire feed. Fall back to page one.
+  const cursor = isObjectId(rawCursor) ? rawCursor : undefined;
 
   // Don't require the post to exist before listing — if it was
   // soft-deleted concurrently we still want to return an empty page
   // gracefully rather than 404 the comments URL.
   const rows = await prisma.communityComment.findMany({
-    where: { postId: id, deletedAt: null },
+    where: { postId: id, ...notDeleted() },
     orderBy: [{ createdAt: "asc" }, { id: "asc" }],
     take: limit + 1,
     cursor: cursor ? { id: cursor } : undefined,
@@ -452,6 +476,10 @@ communityRouter.get("/posts/:id/comments", async (req: Request, res: Response) =
 // Body: { text: string }
 communityRouter.post("/posts/:id/comments", async (req: Request, res: Response) => {
   const { id } = req.params as { id: string };
+  if (!isObjectId(id)) {
+    res.status(404).json({ error: "not_found" });
+    return;
+  }
   const body = (req.body ?? {}) as { text?: unknown };
   const text = safeString(body.text, COMMENT_MAX);
   if (!text) {
@@ -462,7 +490,7 @@ communityRouter.post("/posts/:id/comments", async (req: Request, res: Response) 
   // Bail if the parent post is gone — Prisma would fail on the FK
   // anyway, but we want a clean 404 instead of a 500.
   const post = await prisma.communityPost.findFirst({
-    where: { id, deletedAt: null },
+    where: { id, ...notDeleted() },
     select: { id: true },
   });
   if (!post) {
@@ -481,6 +509,10 @@ communityRouter.post("/posts/:id/comments", async (req: Request, res: Response) 
 // DELETE /community/comments/:id
 communityRouter.delete("/comments/:id", async (req: Request, res: Response) => {
   const { id } = req.params as { id: string };
+  if (!isObjectId(id)) {
+    res.status(404).json({ error: "not_found" });
+    return;
+  }
   const c = await prisma.communityComment.findUnique({
     where: { id },
     select: { userId: true, deletedAt: true },
@@ -528,6 +560,10 @@ function parseReport(body: ReportBody): { reason: string; notes: string | null }
 // POST /community/posts/:id/report
 communityRouter.post("/posts/:id/report", async (req: Request, res: Response) => {
   const { id } = req.params as { id: string };
+  if (!isObjectId(id)) {
+    res.status(404).json({ error: "not_found" });
+    return;
+  }
   const parsed = parseReport((req.body ?? {}) as ReportBody);
   if (!parsed) {
     res.status(400).json({ error: "invalid_report" });
@@ -535,7 +571,7 @@ communityRouter.post("/posts/:id/report", async (req: Request, res: Response) =>
   }
 
   const post = await prisma.communityPost.findFirst({
-    where: { id, deletedAt: null },
+    where: { id, ...notDeleted() },
     select: { id: true },
   });
   if (!post) {
@@ -559,6 +595,10 @@ communityRouter.post("/posts/:id/report", async (req: Request, res: Response) =>
 // POST /community/comments/:id/report
 communityRouter.post("/comments/:id/report", async (req: Request, res: Response) => {
   const { id } = req.params as { id: string };
+  if (!isObjectId(id)) {
+    res.status(404).json({ error: "not_found" });
+    return;
+  }
   const parsed = parseReport((req.body ?? {}) as ReportBody);
   if (!parsed) {
     res.status(400).json({ error: "invalid_report" });
@@ -566,7 +606,7 @@ communityRouter.post("/comments/:id/report", async (req: Request, res: Response)
   }
 
   const c = await prisma.communityComment.findFirst({
-    where: { id, deletedAt: null },
+    where: { id, ...notDeleted() },
     select: { id: true },
   });
   if (!c) {

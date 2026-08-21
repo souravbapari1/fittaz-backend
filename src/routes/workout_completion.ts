@@ -99,7 +99,7 @@ function plannedBurnForDay(plan: unknown, dayIndex: number): number {
   if (!day || typeof day !== "object") return 0;
   const sessions = (day as { sessions?: unknown[] }).sessions;
   if (!Array.isArray(sessions)) return 0;
-  return sessions.reduce((acc, raw) => {
+  return sessions.reduce<number>((acc, raw) => {
     if (!raw || typeof raw !== "object") return acc;
     const s = raw as SessionPayload & { type?: string };
     const durationMin = num(s.durationMin);

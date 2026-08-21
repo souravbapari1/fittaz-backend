@@ -4,6 +4,8 @@ import { Router } from "express";
 
 import { prisma } from "../lib/prisma.ts";
 import { requireAuth } from "../middleware/require_auth.ts";
+import { isUnread } from "../lib/mongo_filters.ts";
+import { isObjectId } from "../lib/object_id.ts";
 
 export const notificationsRouter: Router = Router();
 notificationsRouter.use(requireAuth);
@@ -35,7 +37,10 @@ notificationsRouter.get("/", async (req: Request, res: Response) => {
     ? Math.min(Math.max(Math.trunc(rawLimit), 1), MAX_PAGE)
     : DEFAULT_PAGE;
 
-  const cursor = typeof req.query.cursor === "string" ? req.query.cursor : undefined;
+  // A stale cursor would otherwise reach Prisma as a malformed ObjectID
+  // and 500 the whole inbox. Degrade to the first page instead.
+  const rawCursor = req.query.cursor;
+  const cursor = isObjectId(rawCursor) ? rawCursor : undefined;
 
   const rows = await prisma.userNotification.findMany({
     where: { userId: req.userId! },
@@ -71,7 +76,7 @@ notificationsRouter.get("/", async (req: Request, res: Response) => {
 // GET /notifications/unread-count
 notificationsRouter.get("/unread-count", async (req: Request, res: Response) => {
   const count = await prisma.userNotification.count({
-    where: { userId: req.userId!, readAt: null },
+    where: { userId: req.userId!, ...isUnread() },
   });
   res.json({ count });
 });
@@ -80,7 +85,7 @@ notificationsRouter.get("/unread-count", async (req: Request, res: Response) => 
 notificationsRouter.patch("/read-all", async (req: Request, res: Response) => {
   const now = new Date();
   const result = await prisma.userNotification.updateMany({
-    where: { userId: req.userId!, readAt: null },
+    where: { userId: req.userId!, ...isUnread() },
     data: { readAt: now },
   });
   res.json({ updated: result.count });
@@ -97,8 +102,10 @@ notificationsRouter.delete("/", async (req: Request, res: Response) => {
 // PATCH /notifications/:id/read
 notificationsRouter.patch("/:id/read", async (req: Request, res: Response) => {
   const id = req.params.id;
-  if (!id) {
-    res.status(400).json({ error: "invalid_notification" });
+  // Guarding the shape here also narrows Express 5's
+  // `string | string[]` param type down to a plain string.
+  if (!isObjectId(id)) {
+    res.status(404).json({ error: "not_found" });
     return;
   }
 
@@ -132,8 +139,10 @@ notificationsRouter.patch("/:id/read", async (req: Request, res: Response) => {
 // DELETE /notifications/:id — remove a single notification.
 notificationsRouter.delete("/:id", async (req: Request, res: Response) => {
   const id = req.params.id;
-  if (!id) {
-    res.status(400).json({ error: "invalid_notification" });
+  // Guarding the shape here also narrows Express 5's
+  // `string | string[]` param type down to a plain string.
+  if (!isObjectId(id)) {
+    res.status(404).json({ error: "not_found" });
     return;
   }
 

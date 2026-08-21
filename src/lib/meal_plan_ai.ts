@@ -115,6 +115,8 @@ const MEAL_PLAN_SCHEMA = {
 export interface MealPlanUserContext {
   name: string;
   goal: string;
+  /// Every goal the user picked. Falls back to `[goal]` when absent.
+  goals?: string[];
   gender: string;
   ageYears: number;
   heightCm: number;
@@ -143,6 +145,12 @@ function client(): OpenAI {
   return _client;
 }
 
+/// The user's goals, newest schema first. Older callers that only set the
+/// scalar `goal` still produce a valid one-element list.
+function goalsOf(ctx: { goal: string; goals?: string[] }): string[] {
+  return ctx.goals?.length ? ctx.goals : [ctx.goal];
+}
+
 function buildPrompt(ctx: MealPlanUserContext): string {
   const allergyLine =
     ctx.allergies.length > 0
@@ -151,12 +159,13 @@ function buildPrompt(ctx: MealPlanUserContext): string {
   const aboutLine = ctx.about?.trim()
     ? `User notes: ${ctx.about.trim()}`
     : "";
+  const goalLine = goalsOf(ctx).join(", ");
 
   return `Create a personalised 7-day meal plan for a fitness app user.
 
 User profile:
 - Name: ${ctx.name}
-- Goal: ${ctx.goal}
+- Goals: ${goalLine}
 - Gender: ${ctx.gender}
 - Age: ${ctx.ageYears} years
 - Height: ${ctx.heightCm.toFixed(0)} cm

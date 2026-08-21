@@ -63,6 +63,7 @@ const VALID_HEIGHT_UNITS = new Set(["cm", "ft"]);
 
 interface ProfileBody {
   goal?: unknown;
+  goals?: unknown; // string[] — multi-select; `goal` is kept as goals[0]
   gender?: unknown;
   dob?: unknown; // ISO 8601 string
   heightCm?: unknown;
@@ -79,6 +80,27 @@ interface ProfileBody {
 function pickString(value: unknown, allowed: Set<string>): string | null {
   if (typeof value !== "string") return null;
   return allowed.has(value) ? value : null;
+}
+
+/// Filter an incoming array down to the values we recognise, de-duplicated
+/// and order-preserving. Unknown entries are dropped rather than rejecting
+/// the whole request, so a newer client shipping an extra goal can't 400 an
+/// older server.
+function pickEnumArray(
+  value: unknown,
+  allowed: Set<string>,
+  max = 16,
+): string[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const v of value) {
+    if (typeof v !== "string" || !allowed.has(v) || seen.has(v)) continue;
+    seen.add(v);
+    out.push(v);
+    if (out.length >= max) break;
+  }
+  return out;
 }
 
 function pickPositiveNumber(value: unknown, max: number): number | null {
@@ -496,7 +518,13 @@ meRouter.patch("/", async (req: Request, res: Response) => {
 meRouter.put("/profile", async (req: Request, res: Response) => {
   const body = (req.body ?? {}) as ProfileBody;
 
-  const goal = pickString(body.goal, VALID_GOALS);
+  // Multi-select: prefer `goals`, but fall back to a lone `goal` so clients
+  // released before the multi-select flow keep working unchanged.
+  const singleGoal = pickString(body.goal, VALID_GOALS);
+  const goalsInput = pickEnumArray(body.goals, VALID_GOALS);
+  const goals =
+    goalsInput.length > 0 ? goalsInput : singleGoal ? [singleGoal] : [];
+  const goal = goals[0] ?? null;
   const gender = pickString(body.gender, VALID_GENDERS);
   const diet = pickString(body.diet, VALID_DIETS);
   const bloodGroup = pickString(body.bloodGroup, VALID_BLOOD);
@@ -530,6 +558,7 @@ meRouter.put("/profile", async (req: Request, res: Response) => {
 
   const data = {
     goal: goal!,
+    goals,
     gender: gender!,
     dob: dob!,
     heightCm: heightCm!,
