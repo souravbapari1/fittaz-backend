@@ -726,7 +726,7 @@ meRouter.post(
     // the screen remounts and sends code B while the user is still typing
     // code A from their inbox. Only matching against the latest token
     // would reject A as "invalid" even though it's unused and unexpired.
-    const candidates = await prisma.emailVerificationToken.findMany({
+    const candidates = await prisma.emailVerificationToken.findFirst({
       where: {
         userId: user.id,
         usedAt: null,
@@ -735,9 +735,8 @@ meRouter.post(
       orderBy: { createdAt: "desc" },
     });
     const codeHash = hashVerifyCode(code);
-    const token = candidates.find((t) =>
-      timingSafeEqualHex(codeHash, t.codeHash),
-    );
+    const token = timingSafeEqualHex(codeHash, candidates?.codeHash || "");
+
     console.log({
       codeHash,
       db: token
