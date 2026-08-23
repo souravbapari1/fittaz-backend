@@ -45,6 +45,12 @@ paymentsRouter.use(requireAuth);
 function endDateForDuration(start: Date, duration: string): Date {
   const d = new Date(start);
   switch (duration) {
+    case "oneWeek":
+      d.setUTCDate(d.getUTCDate() + 7);
+      return d;
+    case "twoWeeks":
+      d.setUTCDate(d.getUTCDate() + 14);
+      return d;
     case "oneMonth":
       d.setUTCMonth(d.getUTCMonth() + 1);
       return d;
@@ -56,6 +62,9 @@ function endDateForDuration(start: Date, duration: string): Date {
       return d;
     case "oneYear":
       d.setUTCFullYear(d.getUTCFullYear() + 1);
+      return d;
+    case "threeYears":
+      d.setUTCFullYear(d.getUTCFullYear() + 3);
       return d;
     case "lifetime":
     default:
