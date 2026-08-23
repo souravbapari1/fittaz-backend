@@ -693,7 +693,14 @@ meRouter.post(
     const body = (req.body ?? {}) as { code?: unknown };
     const code = typeof body.code === "string" ? body.code.trim() : "";
 
+    console.log(code);
+    console.log(body);
+
+
+
     if (code.length !== VERIFY_CODE_LEN || !/^\d+$/.test(code)) {
+      console.log("Isshue 1");
+
       res.status(400).json({ error: "invalid_verification_code" });
       return;
     }
@@ -713,7 +720,13 @@ meRouter.post(
       return;
     }
 
-    const token = await prisma.emailVerificationToken.findFirst({
+    // Check every still-valid code, not just the newest one. The client
+    // auto-requests a fresh code on mount (and again on Resend), so it's
+    // routine for more than one outstanding code to exist at once — e.g.
+    // the screen remounts and sends code B while the user is still typing
+    // code A from their inbox. Only matching against the latest token
+    // would reject A as "invalid" even though it's unused and unexpired.
+    const candidates = await prisma.emailVerificationToken.findMany({
       where: {
         userId: user.id,
         usedAt: null,
@@ -721,12 +734,12 @@ meRouter.post(
       },
       orderBy: { createdAt: "desc" },
     });
+    const codeHash = hashVerifyCode(code);
+    const token = candidates.find((t) =>
+      timingSafeEqualHex(codeHash, t.codeHash),
+    );
     if (!token) {
-      res.status(400).json({ error: "invalid_verification_code" });
-      return;
-    }
-
-    if (!timingSafeEqualHex(hashVerifyCode(code), token.codeHash)) {
+      console.log("Isshue 2");
       res.status(400).json({ error: "invalid_verification_code" });
       return;
     }

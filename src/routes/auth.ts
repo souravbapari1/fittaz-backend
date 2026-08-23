@@ -247,9 +247,12 @@ authRouter.post("/reset-password", async (req: Request, res: Response) => {
     return;
   }
 
-  // Latest first — if the user requested multiple codes, only the most
-  // recent one is valid.
-  const token = await prisma.passwordResetToken.findFirst({
+  // Check every still-valid code, not just the newest one — a user can
+  // legitimately have more than one outstanding code (e.g. they tap
+  // "resend" before the first email lands, then use the first one that
+  // actually arrives). Matching only the latest would reject an older
+  // code as "invalid" even though it's unused and unexpired.
+  const candidates = await prisma.passwordResetToken.findMany({
     where: {
       userId: user.id,
       usedAt: null,
@@ -257,12 +260,9 @@ authRouter.post("/reset-password", async (req: Request, res: Response) => {
     },
     orderBy: { createdAt: "desc" },
   });
+  const codeHash = hashResetCode(code);
+  const token = candidates.find((t) => timingSafeEqualHex(codeHash, t.codeHash));
   if (!token) {
-    res.status(400).json({ error: "invalid_reset_code" });
-    return;
-  }
-
-  if (!timingSafeEqualHex(hashResetCode(code), token.codeHash)) {
     res.status(400).json({ error: "invalid_reset_code" });
     return;
   }
