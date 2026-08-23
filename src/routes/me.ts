@@ -4,6 +4,7 @@ import crypto from "node:crypto";
 
 import { getUserAccessPayload } from "../lib/access_features.ts";
 import { scheduleMealPlanForNewUser } from "../jobs/weekly_meal_plans.ts";
+import { scheduleWorkoutPlanForNewUser } from "../jobs/workout_plans.ts";
 import { emailService } from "../lib/email.ts";
 import { prisma } from "../lib/prisma.ts";
 import { hydrateWorkoutPlan } from "../lib/workout_plan_hydrate.ts";
@@ -584,8 +585,14 @@ meRouter.put("/profile", async (req: Request, res: Response) => {
     update: data,
   });
 
+  // First time this user has answered the onboarding questions: build
+  // both of their week-one plans. Fire-and-forget — each takes an OpenAI
+  // round trip and the client shouldn't wait on either to finish saving
+  // a profile. They run independently, so a failure in one (or an empty
+  // exercise catalog) still leaves the other published.
   if (!hadProfile) {
     scheduleMealPlanForNewUser(userId);
+    scheduleWorkoutPlanForNewUser(userId);
   }
 
   res.json({ profile });

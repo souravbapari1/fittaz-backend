@@ -119,6 +119,22 @@ model MealActivePlan {
   updatedAt DateTime @updatedAt
   plansId   String   @db.ObjectId
   userId    String   @db.ObjectId
+
+  // Set only when an operator grants the plan by hand from the admin
+  // dashboard (comps, support make-goods, offline/bank-transfer sales).
+  // Rows created by the Razorpay flow leave both null, so
+  // `grantedByAdminId != null` is the test for "granted, not paid for".
+  //
+  // Deliberately NOT a relation to AdminUser: the grant should outlive
+  // the operator's account, and a required back-relation would drag
+  // AdminUser into every MealActivePlan query. The admin's name is
+  // resolved with a separate lookup where the UI needs it.
+  //
+  // Both optional because every row that predates this feature lacks
+  // the fields entirely — MongoDB is schemaless, and Prisma refuses to
+  // hydrate a required column that isn't in the document.
+  grantedByAdminId String? @db.ObjectId
+  grantNote        String?
 }
 
 model PaymentHistory {

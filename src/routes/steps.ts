@@ -169,7 +169,11 @@ stepsRouter.get("/history", async (req: Request, res: Response) => {
 
 stepsRouter.put("/sync", async (req: Request, res: Response) => {
   const userId = req.userId!;
-  const body = (req.body ?? {}) as { steps?: unknown; date?: unknown };
+  const body = (req.body ?? {}) as {
+    steps?: unknown;
+    date?: unknown;
+    authoritative?: unknown;
+  };
 
   const steps = clampInt(body.steps, LIMITS.steps.min, LIMITS.steps.max);
   if (steps == null) {
@@ -200,7 +204,22 @@ stepsRouter.put("/sync", async (req: Request, res: Response) => {
     select: { steps: true },
   });
 
-  const mergedSteps = Math.max(existing?.steps ?? 0, steps);
+  // Two kinds of client, two merge rules.
+  //
+  // Android can only report steps since the app first ran today (the
+  // step sensor counts from boot and has no history API), so its figure
+  // can legitimately jump *down* — after a reboot, or a reinstall — and
+  // taking the max is what stops the user's progress evaporating.
+  //
+  // iOS asks CoreMotion for the real midnight-to-now total, which is
+  // correct for the whole day. Such a client sets `authoritative` and we
+  // store exactly what it sends. Without this, a single bad reading was
+  // permanent: an older build reported steps-since-reboot, and max()
+  // meant nothing could ever bring that day back down.
+  const authoritative = body.authoritative === true;
+  const mergedSteps = authoritative
+    ? steps
+    : Math.max(existing?.steps ?? 0, steps);
 
   await prisma.walkProgress.upsert({
     where: { userId_date: { userId, date: dayStart } },
