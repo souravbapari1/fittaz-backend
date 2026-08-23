@@ -40,83 +40,88 @@ function dayIndexForToday(weekStart: Date, weekEnd: Date): number | null {
 }
 
 async function loadUserContext(userId: string): Promise<FitnessChatUserContext | null> {
-  const user = await prisma.user.findUnique({
-    where: { id: userId },
-    select: {
-      name: true,
-      profile: true,
-    },
-  });
-  if (!user?.profile) return null;
+  try {
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        name: true,
+        profile: true,
+      },
+    });
+    if (!user?.profile) return null;
 
-  const profile = user.profile;
-  const ctx: FitnessChatUserContext = {
-    name: user.name,
-    goal: profile.goal,
-    goals: profile.goals,
-    gender: profile.gender,
-    ageYears: ageFromDob(profile.dob),
-    heightCm: profile.heightCm,
-    weightKg: profile.weightKg,
-    targetWeightKg: profile.targetWeightKg,
-    diet: profile.diet,
-    allergies: profile.allergies,
-    about: profile.about,
-  };
-
-  const mealPlan = await prisma.aiMealPlan.findFirst({
-    where: { userId, isActive: true, status: "published" },
-    orderBy: { publishedAt: "desc" },
-    select: { id: true, title: true, notes: true, weekStart: true, weekEnd: true, plan: true },
-  });
-
-  if (mealPlan) {
-    ctx.mealPlanTitle = mealPlan.title;
-    ctx.mealPlanNotes = mealPlan.notes;
-
-    const planJson = mealPlan.plan as {
-      targets?: { calories?: number };
-      days?: Array<{ dayIndex?: number; meals?: unknown[] }>;
+    const profile = user.profile;
+    const ctx: FitnessChatUserContext = {
+      name: user.name,
+      goal: profile.goal,
+      goals: profile.goals,
+      gender: profile.gender,
+      ageYears: ageFromDob(profile.dob),
+      heightCm: profile.heightCm,
+      weightKg: profile.weightKg,
+      targetWeightKg: profile.targetWeightKg,
+      diet: profile.diet,
+      allergies: profile.allergies,
+      about: profile.about,
     };
-    const dayIdx = dayIndexForToday(mealPlan.weekStart, mealPlan.weekEnd);
-    if (dayIdx != null) {
-      const day = planJson.days?.find((d) => d.dayIndex === dayIdx);
-      const mealsTotal = Array.isArray(day?.meals) ? day!.meals!.length : 4;
-      ctx.todayMealsTotal = mealsTotal;
-      ctx.todayCalorieTarget = planJson.targets?.calories;
 
-      const planDate = calendarDate(mealPlan.weekStart);
-      planDate.setDate(planDate.getDate() + dayIdx);
+    const mealPlan = await prisma.aiMealPlan.findFirst({
+      where: { userId, isActive: true, status: "published" },
+      orderBy: { publishedAt: "desc" },
+      select: { id: true, title: true, notes: true, weekStart: true, weekEnd: true, plan: true },
+    });
 
-      const logs = await prisma.mealIntakeLog.findMany({
-        where: { userId, mealPlanId: mealPlan.id, planDate },
-        select: { calories: true },
-      });
-      ctx.todayMealsDone = logs.length;
-      ctx.todayCaloriesEaten = logs.reduce((sum, r) => sum + r.calories, 0);
+    if (mealPlan) {
+      ctx.mealPlanTitle = mealPlan.title;
+      ctx.mealPlanNotes = mealPlan.notes;
+
+      const planJson = mealPlan.plan as {
+        targets?: { calories?: number };
+        days?: Array<{ dayIndex?: number; meals?: unknown[] }>;
+      };
+      const dayIdx = dayIndexForToday(mealPlan.weekStart, mealPlan.weekEnd);
+      if (dayIdx != null) {
+        const day = planJson.days?.find((d) => d.dayIndex === dayIdx);
+        const mealsTotal = Array.isArray(day?.meals) ? day!.meals!.length : 4;
+        ctx.todayMealsTotal = mealsTotal;
+        ctx.todayCalorieTarget = planJson.targets?.calories;
+
+        const planDate = calendarDate(mealPlan.weekStart);
+        planDate.setDate(planDate.getDate() + dayIdx);
+
+        const logs = await prisma.mealIntakeLog.findMany({
+          where: { userId, mealPlanId: mealPlan.id, planDate },
+          select: { calories: true },
+        });
+        ctx.todayMealsDone = logs.length;
+        ctx.todayCaloriesEaten = logs.reduce((sum, r) => sum + r.calories, 0);
+      }
     }
+
+    const startOfDay = calendarDate(new Date());
+    const endOfDay = new Date(startOfDay);
+    endOfDay.setDate(endOfDay.getDate() + 1);
+
+    const waterAgg = await prisma.waterLog.aggregate({
+      where: {
+        userId,
+        loggedAt: { gte: startOfDay, lt: endOfDay },
+      },
+      _sum: { amountMl: true },
+    });
+    ctx.todayWaterMl = waterAgg._sum.amountMl ?? 0;
+
+    const waterSettings = await prisma.waterSettings.findUnique({
+      where: { userId },
+      select: { dailyGoalMl: true },
+    });
+    ctx.waterGoalMl = waterSettings?.dailyGoalMl ?? undefined;
+
+    return ctx;
+  } catch (err) {
+    console.error("[fitness-chat] loadUserContext failed for user", userId, ":", err);
+    throw err;
   }
-
-  const startOfDay = calendarDate(new Date());
-  const endOfDay = new Date(startOfDay);
-  endOfDay.setDate(endOfDay.getDate() + 1);
-
-  const waterAgg = await prisma.waterLog.aggregate({
-    where: {
-      userId,
-      loggedAt: { gte: startOfDay, lt: endOfDay },
-    },
-    _sum: { amountMl: true },
-  });
-  ctx.todayWaterMl = waterAgg._sum.amountMl ?? 0;
-
-  const waterSettings = await prisma.waterSettings.findUnique({
-    where: { userId },
-    select: { dailyGoalMl: true },
-  });
-  ctx.waterGoalMl = waterSettings?.dailyGoalMl ?? undefined;
-
-  return ctx;
 }
 
 function serializeMessage(row: {
@@ -150,13 +155,13 @@ async function prepareMessageRequest(
 ): Promise<
   | { ok: false; status: number; error: string; message?: string }
   | {
-      ok: true;
-      message: string;
-      ctx: FitnessChatUserContext;
-      conversation: ConversationWithMessages;
-      history: Array<{ role: "user" | "assistant"; content: string }>;
-      isNewConversation: boolean;
-    }
+    ok: true;
+    message: string;
+    ctx: FitnessChatUserContext;
+    conversation: ConversationWithMessages;
+    history: Array<{ role: "user" | "assistant"; content: string }>;
+    isNewConversation: boolean;
+  }
 > {
   const message =
     typeof body.message === "string" ? body.message.trim() : "";
@@ -182,57 +187,62 @@ async function prepareMessageRequest(
       ? body.conversationId
       : null;
 
-  const ctx = await loadUserContext(userId);
-  if (!ctx) {
-    return {
-      ok: false,
-      status: 400,
-      error: "profile_required",
-      message: "Complete your fitness profile before using the coach.",
-    };
-  }
+  try {
+    const ctx = await loadUserContext(userId);
+    if (!ctx) {
+      return {
+        ok: false,
+        status: 400,
+        error: "profile_required",
+        message: "Complete your fitness profile before using the coach.",
+      };
+    }
 
-  let conversation = conversationId
-    ? await prisma.fitnessChatConversation.findFirst({
+    let conversation = conversationId
+      ? await prisma.fitnessChatConversation.findFirst({
         where: { id: conversationId, userId },
         include: {
           messages: { orderBy: { createdAt: "asc" }, take: 30 },
         },
       })
-    : null;
+      : null;
 
-  if (conversationId && !conversation) {
-    return { ok: false, status: 404, error: "conversation_not_found" };
-  }
+    if (conversationId && !conversation) {
+      return { ok: false, status: 404, error: "conversation_not_found" };
+    }
 
-  const isNewConversation = !conversation;
-  if (!conversation) {
-    conversation = await prisma.fitnessChatConversation.create({
-      data: {
-        userId,
-        title: titleFromMessage(message),
+    const isNewConversation = !conversation;
+    if (!conversation) {
+      conversation = await prisma.fitnessChatConversation.create({
+        data: {
+          userId,
+          title: titleFromMessage(message),
+        },
+        include: { messages: true },
+      });
+    }
+
+    const history = conversation.messages.map((m) => ({
+      role: m.role as "user" | "assistant",
+      content: m.content,
+    }));
+
+    return {
+      ok: true,
+      message,
+      ctx,
+      conversation: {
+        id: conversation.id,
+        title: conversation.title,
+        messages: conversation.messages,
       },
-      include: { messages: true },
-    });
+      history,
+      isNewConversation,
+    };
+  } catch (err) {
+    console.error("[fitness-chat] prepareMessageRequest failed:", err);
+    throw err;
   }
-
-  const history = conversation.messages.map((m) => ({
-    role: m.role as "user" | "assistant",
-    content: m.content,
-  }));
-
-  return {
-    ok: true,
-    message,
-    ctx,
-    conversation: {
-      id: conversation.id,
-      title: conversation.title,
-      messages: conversation.messages,
-    },
-    history,
-    isNewConversation,
-  };
 }
 
 // POST /fitness-chat/message/stream — SSE token stream
@@ -286,37 +296,46 @@ fitnessChatRouter.post("/message/stream", async (req: Request, res: Response) =>
     return;
   }
 
-  const assistantRow = await prisma.fitnessChatMessage.create({
-    data: {
+  try {
+    const assistantRow = await prisma.fitnessChatMessage.create({
+      data: {
+        conversationId: conversation.id,
+        role: "assistant",
+        content: reply.trim(),
+      },
+    });
+
+    const updatedTitle =
+      isNewConversation || history.length === 0
+        ? titleFromMessage(message)
+        : conversation.title;
+
+    if (updatedTitle !== conversation.title) {
+      await prisma.fitnessChatConversation.update({
+        where: { id: conversation.id },
+        data: { title: updatedTitle, updatedAt: new Date() },
+      });
+    } else {
+      await prisma.fitnessChatConversation.update({
+        where: { id: conversation.id },
+        data: { updatedAt: new Date() },
+      });
+    }
+
+    writeSse(res, "done", {
       conversationId: conversation.id,
-      role: "assistant",
-      content: reply.trim(),
-    },
-  });
-
-  const updatedTitle =
-    isNewConversation || history.length === 0
-      ? titleFromMessage(message)
-      : conversation.title;
-
-  if (updatedTitle !== conversation.title) {
-    await prisma.fitnessChatConversation.update({
-      where: { id: conversation.id },
-      data: { title: updatedTitle, updatedAt: new Date() },
+      title: updatedTitle,
+      assistantMessage: serializeMessage(assistantRow),
     });
-  } else {
-    await prisma.fitnessChatConversation.update({
-      where: { id: conversation.id },
-      data: { updatedAt: new Date() },
+    res.end();
+  } catch (err) {
+    console.error("[fitness-chat] saving assistant message failed:", err);
+    writeSse(res, "error", {
+      error: "internal_error",
+      message: "The coach replied, but we couldn't save the reply. Try again.",
     });
+    res.end();
   }
-
-  writeSse(res, "done", {
-    conversationId: conversation.id,
-    title: updatedTitle,
-    assistantMessage: serializeMessage(assistantRow),
-  });
-  res.end();
 });
 
 // POST /fitness-chat/message
@@ -345,38 +364,43 @@ fitnessChatRouter.post("/message", async (req: Request, res: Response) => {
     return;
   }
 
-  const txResult = await prisma.$transaction([
-    prisma.fitnessChatMessage.create({
-      data: {
-        conversationId: conversation.id,
-        role: "user",
-        content: message,
-      },
-    }),
-    prisma.fitnessChatMessage.create({
-      data: {
-        conversationId: conversation.id,
-        role: "assistant",
-        content: reply,
-      },
-    }),
-    prisma.fitnessChatConversation.update({
-      where: { id: conversation.id },
-      data: {
-        updatedAt: new Date(),
-        ...(history.length === 0 ? { title: titleFromMessage(message) } : {}),
-      },
-    }),
-  ]);
-  const userRow = txResult[0];
-  const assistantRow = txResult[1];
+  try {
+    const txResult = await prisma.$transaction([
+      prisma.fitnessChatMessage.create({
+        data: {
+          conversationId: conversation.id,
+          role: "user",
+          content: message,
+        },
+      }),
+      prisma.fitnessChatMessage.create({
+        data: {
+          conversationId: conversation.id,
+          role: "assistant",
+          content: reply,
+        },
+      }),
+      prisma.fitnessChatConversation.update({
+        where: { id: conversation.id },
+        data: {
+          updatedAt: new Date(),
+          ...(history.length === 0 ? { title: titleFromMessage(message) } : {}),
+        },
+      }),
+    ]);
+    const userRow = txResult[0];
+    const assistantRow = txResult[1];
 
-  res.json({
-    conversationId: conversation.id,
-    title: conversation.title,
-    userMessage: serializeMessage(userRow),
-    assistantMessage: serializeMessage(assistantRow),
-  });
+    res.json({
+      conversationId: conversation.id,
+      title: conversation.title,
+      userMessage: serializeMessage(userRow),
+      assistantMessage: serializeMessage(assistantRow),
+    });
+  } catch (err) {
+    console.error("[fitness-chat] save message transaction failed:", err);
+    throw err;
+  }
 });
 
 // GET /fitness-chat/conversations
