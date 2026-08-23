@@ -693,14 +693,7 @@ meRouter.post(
     const body = (req.body ?? {}) as { code?: unknown };
     const code = typeof body.code === "string" ? body.code.trim() : "";
 
-    console.log(code);
-    console.log(body);
-
-
-
     if (code.length !== VERIFY_CODE_LEN || !/^\d+$/.test(code)) {
-      console.log("Isshue 1");
-
       res.status(400).json({ error: "invalid_verification_code" });
       return;
     }
@@ -720,30 +713,22 @@ meRouter.post(
       return;
     }
 
-    // Check every still-valid code, not just the newest one. The client
-    // auto-requests a fresh code on mount (and again on Resend), so it's
-    // routine for more than one outstanding code to exist at once — e.g.
-    // the screen remounts and sends code B while the user is still typing
-    // code A from their inbox. Only matching against the latest token
-    // would reject A as "invalid" even though it's unused and unexpired.
-    const candidates = await prisma.emailVerificationToken.findFirst({
+    const token = await prisma.emailVerificationToken.findFirst({
       where: {
         userId: user.id,
+        usedAt: null,
         expiresAt: { gt: new Date() },
       },
       orderBy: { createdAt: "desc" },
     });
-    const codeHash = hashVerifyCode(code);
-    const token = timingSafeEqualHex(codeHash, candidates?.codeHash || "");
-    console.log(candidates);
-
-    console.log({
-      codeHash,
-      db: candidates?.codeHash
-    });
-
     if (!token) {
-      console.log("Isshue 2");
+      res.status(400).json({ error: "invalid_verification_code" });
+      return;
+    }
+
+    const computed = hashVerifyCode(code);
+    console.log("[debug] code:", code, "computed:", computed, "stored:", token.codeHash, "equal:", computed === token.codeHash);
+    if (!timingSafeEqualHex(hashVerifyCode(code), token.codeHash)) {
       res.status(400).json({ error: "invalid_verification_code" });
       return;
     }
