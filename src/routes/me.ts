@@ -738,6 +738,11 @@ meRouter.post(
     const token = candidates.find((t) =>
       timingSafeEqualHex(codeHash, t.codeHash),
     );
+    console.log({
+      codeHash,
+      db: token
+    });
+
     if (!token) {
       console.log("Isshue 2");
       res.status(400).json({ error: "invalid_verification_code" });
