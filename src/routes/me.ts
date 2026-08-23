@@ -667,6 +667,7 @@ meRouter.post(
         codeHash: hashVerifyCode(code),
         userId: user.id,
         expiresAt,
+        usedAt: null
       },
     });
 
