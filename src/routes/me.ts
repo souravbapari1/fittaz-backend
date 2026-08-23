@@ -729,13 +729,13 @@ meRouter.post(
     const candidates = await prisma.emailVerificationToken.findFirst({
       where: {
         userId: user.id,
-        usedAt: null,
         expiresAt: { gt: new Date() },
       },
       orderBy: { createdAt: "desc" },
     });
     const codeHash = hashVerifyCode(code);
     const token = timingSafeEqualHex(codeHash, candidates?.codeHash || "");
+    console.log(candidates);
 
     console.log({
       codeHash,
