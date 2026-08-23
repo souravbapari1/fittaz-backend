@@ -716,7 +716,6 @@ meRouter.post(
     const token = await prisma.emailVerificationToken.findFirst({
       where: {
         userId: user.id,
-        usedAt: null,
         expiresAt: { gt: new Date() },
       },
       orderBy: { createdAt: "desc" },
