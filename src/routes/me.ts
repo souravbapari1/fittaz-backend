@@ -739,7 +739,7 @@ meRouter.post(
 
     console.log({
       codeHash,
-      db: token
+      db: candidates?.codeHash
     });
 
     if (!token) {
