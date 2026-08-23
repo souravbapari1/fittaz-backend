@@ -664,7 +664,7 @@ meRouter.post(
     const expiresAt = new Date(Date.now() + VERIFY_CODE_TTL_MIN * 60_000);
     await prisma.emailVerificationToken.create({
       data: {
-        codeHash: (code),
+        codeHash: hashVerifyCode(code),
         userId: user.id,
         expiresAt,
       },
@@ -726,7 +726,7 @@ meRouter.post(
       return;
     }
 
-    if (code != token.codeHash) {
+    if (!timingSafeEqualHex(hashVerifyCode(code), token.codeHash)) {
       res.status(400).json({ error: "invalid_verification_code" });
       return;
     }

@@ -198,7 +198,7 @@ authRouter.post("/forgot-password", async (req: Request, res: Response) => {
     const expiresAt = new Date(Date.now() + RESET_CODE_TTL_MIN * 60_000);
     await prisma.passwordResetToken.create({
       data: {
-        codeHash: (code),
+        codeHash: hashResetCode(code),
         userId: user.id,
         expiresAt,
       },
@@ -262,7 +262,7 @@ authRouter.post("/reset-password", async (req: Request, res: Response) => {
     return;
   }
 
-  if (code != token.codeHash) {
+  if (!timingSafeEqualHex(hashResetCode(code), token.codeHash)) {
     res.status(400).json({ error: "invalid_reset_code" });
     return;
   }
