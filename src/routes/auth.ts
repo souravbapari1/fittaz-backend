@@ -201,6 +201,7 @@ authRouter.post("/forgot-password", async (req: Request, res: Response) => {
         codeHash: hashResetCode(code),
         userId: user.id,
         expiresAt,
+        usedAt: null,
       },
     });
     try {
