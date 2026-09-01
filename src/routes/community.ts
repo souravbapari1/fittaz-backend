@@ -243,16 +243,16 @@ communityRouter.get("/posts", async (req: Request, res: Response) => {
     rows.length === 0
       ? new Set<string>()
       : new Set(
-          (
-            await prisma.communityLike.findMany({
-              where: {
-                userId: req.userId!,
-                postId: { in: rows.map((r) => r.id) },
-              },
-              select: { postId: true },
-            })
-          ).map((r) => r.postId),
-        );
+        (
+          await prisma.communityLike.findMany({
+            where: {
+              userId: req.userId!,
+              postId: { in: rows.map((r) => r.id) },
+            },
+            select: { postId: true },
+          })
+        ).map((r) => r.postId),
+      );
 
   res.json({
     posts: rows.map((r) => shapePost(r, likedIds.has(r.id))),
@@ -294,6 +294,12 @@ communityRouter.post("/posts", async (req: Request, res: Response) => {
       content: content ?? "",
       images,
       userId: req.userId!,
+      // Explicitly set deletedAt so the field exists in the MongoDB
+      // document. Prisma's MongoDB connector doesn't match missing
+      // fields with `{ deletedAt: null }` filters, which would make
+      // new posts invisible in the admin panel's default (non-deleted)
+      // view until this is set.
+      deletedAt: null,
     },
     select: postBaseSelect,
   });
@@ -499,7 +505,7 @@ communityRouter.post("/posts/:id/comments", async (req: Request, res: Response) 
   }
 
   const created = await prisma.communityComment.create({
-    data: { postId: id, userId: req.userId!, text },
+    data: { postId: id, userId: req.userId!, text, deletedAt: null },
     select: commentBaseSelect,
   });
 
