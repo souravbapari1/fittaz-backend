@@ -266,6 +266,7 @@ communityRouter.post("/posts", async (req: Request, res: Response) => {
   const body = (req.body ?? {}) as { content?: unknown; imageUrls?: unknown };
 
   const content = safeString(body.content, CONTENT_MAX);
+
   // Empty content is allowed when there's at least one image — that
   // matches Instagram-style image posts. We re-check below.
   const contentForCheck = typeof body.content === "string" ? body.content.trim() : "";
