@@ -6,6 +6,7 @@ import { prisma } from "../lib/prisma.ts";
 import { hashPassword, signToken, verifyPassword } from "../lib/auth.ts";
 import { emailService } from "../lib/email.ts";
 import { smsService } from "../lib/sms.ts";
+import { requireAuth } from "../middleware/require_auth.ts";
 
 export const authRouter: Router = Router();
 
@@ -62,6 +63,11 @@ interface OtpSendBody {
 interface OtpVerifyBody {
   phoneNumber?: unknown;
   code?: unknown;
+}
+
+interface OtpDetailsBody {
+  name?: unknown;
+  email?: unknown;
 }
 
 /** Numeric, zero-padded OTP. Crypto-random so it isn't guessable. */
@@ -536,5 +542,75 @@ authRouter.post("/otp/verify", async (req: Request, res: Response) => {
     profile: user.profile,
     access,
     isNewUser,
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phone-OTP onboarding: collect name + email for phone-only accounts
+// ---------------------------------------------------------------------------
+//
+// After a brand-new phone user verifies their OTP, their account has a
+// placeholder email (`phone+<num>@phone.fittaz.app`) and a generated name
+// (`User <last4>`). This authenticated endpoint lets them replace both
+// with their real details before continuing to profile setup.
+//
+//   POST /auth/otp/details { name, email }
+//     - Requires a valid bearer token (issued by /auth/otp/verify).
+//     - Validates name (>= 2 chars) + email (valid shape).
+//     - Rejects if the email is already used by *another* user.
+//     - Updates the user's name + email, returns the refreshed
+//       `{ user, profile, access }` so the client can re-hydrate.
+//
+// We deliberately don't strip the placeholder email pattern here — the
+// uniqueness check against other users is what matters. If the user
+// submits their own placeholder email back, it still passes (it's
+// already theirs).
+
+authRouter.post("/otp/details", requireAuth, async (req: Request, res: Response) => {
+  const body = req.body as OtpDetailsBody;
+  const name = typeof body.name === "string" ? body.name.trim() : "";
+  const email = normalizeEmail(body.email);
+
+  if (name.length < 2) {
+    res.status(400).json({ error: "name_too_short" });
+    return;
+  }
+  if (!email) {
+    res.status(400).json({ error: "invalid_email" });
+    return;
+  }
+
+  const userId = req.userId;
+  if (!userId) {
+    res.status(401).json({ error: "missing_bearer_token" });
+    return;
+  }
+
+  // Reject if another user already owns this email.
+  const clash = await prisma.user.findUnique({ where: { email } });
+  if (clash && clash.id !== userId) {
+    res.status(409).json({ error: "email_already_in_use" });
+    return;
+  }
+
+  const updated = await prisma.user.update({
+    where: { id: userId },
+    data: { name, email },
+    include: { profile: true },
+  });
+
+  const access = await getUserAccessPayload(updated.id);
+  res.json({
+    user: {
+      id: updated.id,
+      name: updated.name,
+      email: updated.email,
+      emailVerified: updated.emailVerified,
+      phoneNumber: updated.phoneNumber,
+      createdAt: updated.createdAt,
+      updatedAt: updated.updatedAt,
+    },
+    profile: updated.profile,
+    access,
   });
 });
