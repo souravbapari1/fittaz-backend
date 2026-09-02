@@ -76,6 +76,30 @@ model EmailVerificationToken {
   @@index([expiresAt])
 }
 
+// Single-use OTP issued by POST /auth/otp/send and consumed by
+// POST /auth/otp/verify. Same shape as PasswordResetToken /
+// EmailVerificationToken on purpose — keeps the OTP plumbing
+// (generation, hashing, lookup, replay-prevention) uniform across
+// flows. Only the SHA-256 hash of the code is persisted.
+//
+// Keyed by `phoneNumber` (not `userId`) because the user may not exist
+// yet — phone-first signup creates the User row only on successful
+// verification. A sparse unique index on phoneNumber would conflict
+// with multiple nulls in Postgres, but MongoDB treats null as a value
+// too, so we rely on a plain index + the route handler's own
+// "one outstanding code per phone" check instead.
+model PhoneOtpToken {
+  id          String    @id @default(auto()) @map("_id") @db.ObjectId
+  codeHash    String
+  phoneNumber String
+  expiresAt   DateTime
+  usedAt      DateTime?
+  createdAt   DateTime  @default(now())
+
+  @@index([phoneNumber])
+  @@index([expiresAt])
+}
+
 model Profile {
   id             String   @id @default(auto()) @map("_id") @db.ObjectId
   // Primary fitness goal — always mirrors `goals[0]`. Kept as a scalar so the

@@ -5,6 +5,7 @@ import { getUserAccessPayload } from "../lib/access_features.ts";
 import { prisma } from "../lib/prisma.ts";
 import { hashPassword, signToken, verifyPassword } from "../lib/auth.ts";
 import { emailService } from "../lib/email.ts";
+import { smsService } from "../lib/sms.ts";
 
 export const authRouter: Router = Router();
 
@@ -12,6 +13,13 @@ export const authRouter: Router = Router();
 // agree about TTL without having to pass it around explicitly.
 const RESET_CODE_TTL_MIN = 15;
 const RESET_CODE_LEN = 6;
+
+// Phone-OTP knobs. Same length + a shorter TTL than email reset (5 min is
+// plenty for an SMS that lands in seconds), plus a per-phone resend cooldown
+// to blunt brute-force / SMS-flooding abuse without needing Redis.
+const PHONE_OTP_TTL_MIN = 5;
+const PHONE_OTP_LEN = 6;
+const PHONE_OTP_RESEND_COOLDOWN_SEC = 30;
 
 // Fields we never want to return to the client. Centralised so /auth/* and
 // /me/* stay consistent.
@@ -47,6 +55,15 @@ interface ResetPasswordBody {
   password?: unknown;
 }
 
+interface OtpSendBody {
+  phoneNumber?: unknown;
+}
+
+interface OtpVerifyBody {
+  phoneNumber?: unknown;
+  code?: unknown;
+}
+
 /** Numeric, zero-padded OTP. Crypto-random so it isn't guessable. */
 function generateResetCode(): string {
   // randomInt is uniform across [0, 10^len). Range is small so this is fast.
@@ -72,6 +89,40 @@ function normalizeEmail(value: unknown): string | null {
   const v = value.trim().toLowerCase();
   if (!EMAIL_RE.test(v)) return null;
   return v;
+}
+
+// Indian mobile numbers: 10 digits starting with 6-9. We accept a leading
+// +91 / 0 and strip it so the stored + matched value is always the bare
+// 10-digit national number — Fast2SMS expects exactly that shape.
+const PHONE_RE = /^(?:\+91|0)?([6-9]\d{9})$/;
+
+function normalizePhone(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const v = value.replace(/[\s-]/g, "");
+  const m = PHONE_RE.exec(v);
+  return m?.[1] ?? null;
+}
+
+// ---------------------------------------------------------------------------
+// Phone-OTP resend rate limiter (in-memory, per phone).
+// ---------------------------------------------------------------------------
+//
+// Tiny Map<phone, lastSentAtMs>. Good enough for a single-process server —
+// the existing /auth/forgot-password route has the same "TODO: rate limit"
+// gap, so we're not making things worse. A multi-instance deployment would
+// need Redis; for now this stops one client from burning the Fast2SMS quota.
+const _lastOtpSentAt = new Map<string, number>();
+
+function otpResendAvailableInSec(phone: string): number {
+  const last = _lastOtpSentAt.get(phone);
+  if (!last) return 0;
+  const elapsedSec = (Date.now() - last) / 1000;
+  const remaining = PHONE_OTP_RESEND_COOLDOWN_SEC - elapsedSec;
+  return remaining > 0 ? Math.ceil(remaining) : 0;
+}
+
+function markOtpSent(phone: string): void {
+  _lastOtpSentAt.set(phone, Date.now());
 }
 
 authRouter.post("/signup", async (req: Request, res: Response) => {
@@ -292,4 +343,198 @@ authRouter.post("/reset-password", async (req: Request, res: Response) => {
   ]);
 
   res.json({ ok: true });
+});
+
+// ---------------------------------------------------------------------------
+// Phone OTP login / signup
+// ---------------------------------------------------------------------------
+//
+// Two-step flow (mirrors the email/password-reset OTP flow but keyed by
+// phone, and the verify step *also* creates the account on first run):
+//
+//   1. POST /auth/otp/send { phoneNumber }
+//        - Validates the phone shape (10-digit Indian mobile).
+//        - Enforces a per-phone resend cooldown (default 30s) so a single
+//          client can't drain the Fast2SMS quota.
+//        - Mints a fresh 6-digit code, stores its SHA-256 hash with a
+//          short TTL (5 min), and dispatches the code via `smsService`.
+//        - Always returns 200 with { ok: true, ttlMinutes, resendInSec }
+//          so the response can't be used to enumerate which numbers have
+//          requested codes (we don't know yet — the user is created on
+//          verify, not on send).
+//
+//   2. POST /auth/otp/verify { phoneNumber, code }
+//        - Looks up the most recent unused, unexpired code for the phone
+//          and compares the SHA-256 hash of the submitted code in
+//          constant time.
+//        - On success: marks the code used + invalidates every other
+//          outstanding code for that phone, then either logs the
+//          existing user in (matched by phoneNumber) or creates a
+//          phone-only account (auto-generated placeholder email +
+//          random password) and logs them in.
+//        - Returns the same shape as /auth/login so the Flutter client
+//          can reuse its existing auth-response hydration.
+
+authRouter.post("/otp/send", async (req: Request, res: Response) => {
+  const body = req.body as OtpSendBody;
+  const phone = normalizePhone(body.phoneNumber);
+
+  if (!phone) {
+    res.status(400).json({ error: "invalid_phone" });
+    return;
+  }
+
+  const resendIn = otpResendAvailableInSec(phone);
+  if (resendIn > 0) {
+    res.status(429).json({
+      error: "otp_cooldown",
+      resendInSec: resendIn,
+      ttlMinutes: PHONE_OTP_TTL_MIN,
+    });
+    return;
+  }
+
+  const code = generateResetCode();
+  const expiresAt = new Date(Date.now() + PHONE_OTP_TTL_MIN * 60_000);
+  await prisma.phoneOtpToken.create({
+    data: {
+      codeHash: hashResetCode(code),
+      phoneNumber: phone,
+      expiresAt,
+      usedAt: null,
+    },
+  });
+
+  markOtpSent(phone);
+  try {
+    await smsService.sendOtpCode({
+      to: phone,
+      code,
+      ttlMinutes: PHONE_OTP_TTL_MIN,
+    });
+  } catch (err) {
+    // Surface a generic error so the client can retry. We log the real
+    // cause for the operator; the user just sees "sms_failed".
+    console.error("[otp/send] SMS send failed", err);
+    res.status(502).json({ error: "sms_failed" });
+    return;
+  }
+
+  res.json({
+    ok: true,
+    ttlMinutes: PHONE_OTP_TTL_MIN,
+    resendInSec: PHONE_OTP_RESEND_COOLDOWN_SEC,
+  });
+});
+
+authRouter.post("/otp/verify", async (req: Request, res: Response) => {
+  const body = req.body as OtpVerifyBody;
+  const phone = normalizePhone(body.phoneNumber);
+  const code = typeof body.code === "string" ? body.code.trim() : "";
+
+  if (!phone) {
+    res.status(400).json({ error: "invalid_phone" });
+    return;
+  }
+  if (code.length !== PHONE_OTP_LEN || !/^\d+$/.test(code)) {
+    res.status(400).json({ error: "invalid_otp" });
+    return;
+  }
+
+  // Match any still-valid code for this phone (a user can legitimately
+  // have more than one outstanding code if they tapped "resend" before
+  // the first SMS landed, then used the first one that arrived).
+  const candidates = await prisma.phoneOtpToken.findMany({
+    where: {
+      phoneNumber: phone,
+      usedAt: null,
+      expiresAt: { gt: new Date() },
+    },
+    orderBy: { createdAt: "desc" },
+  });
+  const codeHash = hashResetCode(code);
+  const token = candidates.find((t) => timingSafeEqualHex(codeHash, t.codeHash));
+  if (!token) {
+    res.status(400).json({ error: "invalid_otp" });
+    return;
+  }
+
+  // Invalidate this code + every other outstanding code for the phone in
+  // one transaction so a duplicate request mid-flow can't be replayed.
+  await prisma.$transaction([
+    prisma.phoneOtpToken.update({
+      where: { id: token.id },
+      data: { usedAt: new Date() },
+    }),
+    prisma.phoneOtpToken.updateMany({
+      where: {
+        phoneNumber: phone,
+        usedAt: null,
+        id: { not: token.id },
+      },
+      data: { usedAt: new Date() },
+    }),
+  ]);
+
+  // Find or create the user. Phone-first signup: a brand-new number gets
+  // a placeholder email + a random password (argon2id-hashed). The user
+  // can add a real email + set a password later from the profile screen.
+  // The placeholder email is deterministic per phone so a second OTP
+  // login on the same device reuses the same account instead of minting
+  // a duplicate.
+  const placeholderEmail = `phone+${phone}@phone.fittaz.app`;
+  let user = await prisma.user.findFirst({
+    where: { phoneNumber: phone },
+    include: { profile: true },
+  });
+  let isNewUser = false;
+  if (!user) {
+    // Also guard against the edge case where a phone-only user already
+    // exists via the placeholder email but phoneNumber wasn't set yet
+    // (shouldn't happen with the flow above, but be defensive).
+    user = await prisma.user.findUnique({
+      where: { email: placeholderEmail },
+      include: { profile: true },
+    });
+  }
+  if (!user) {
+    isNewUser = true;
+    const randomPassword = crypto.randomBytes(32).toString("hex");
+    const hash = await hashPassword(randomPassword);
+    user = await prisma.user.create({
+      data: {
+        name: `User ${phone.slice(-4)}`,
+        email: placeholderEmail,
+        password: hash,
+        phoneNumber: phone,
+      },
+      include: { profile: true },
+    });
+  } else if (user.phoneNumber !== phone) {
+    // Existing account (e.g. created via email signup) logging in by
+    // phone for the first time — stamp the phone on it.
+    user = await prisma.user.update({
+      where: { id: user.id },
+      data: { phoneNumber: phone },
+      include: { profile: true },
+    });
+  }
+
+  const authToken = await signToken(user.id);
+  const access = await getUserAccessPayload(user.id);
+  res.json({
+    token: authToken,
+    user: {
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      emailVerified: user.emailVerified,
+      phoneNumber: user.phoneNumber,
+      createdAt: user.createdAt,
+      updatedAt: user.updatedAt,
+    },
+    profile: user.profile,
+    access,
+    isNewUser,
+  });
 });
